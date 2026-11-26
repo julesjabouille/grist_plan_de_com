@@ -12,7 +12,29 @@
   <style>
     [hidden] { display: none !important; }
     body { background: var(--background-default-grey); margin: 0; }
-    .page { max-width: 1400px; margin: 0 auto; padding: 0.75rem 1rem 2rem; }
+    .page { max-width: 1400px; margin: 0 auto; padding: 0.75rem 1rem 11rem; }
+
+    .notes-sans-date {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+      padding: 0.75rem 1rem 0.9rem;
+      background: var(--background-default-grey);
+      border-top: 3px solid var(--background-action-high-blue-france);
+      box-shadow: 0 -4px 16px rgba(22, 22, 22, 0.08);
+    }
+    .notes-sans-date-inner {
+      max-width: 1400px; margin: 0 auto;
+      display: grid; gap: 0.5rem;
+    }
+    .notes-sans-date .bloc-titre { margin-bottom: 0; }
+    .notes-sans-date textarea {
+      min-height: 4.5rem; max-height: 8rem; resize: vertical;
+    }
+    .notes-sans-date-actions {
+      display: flex; justify-content: flex-end; gap: 0.5rem; align-items: center;
+    }
+    .notes-sans-date-statut {
+      margin: 0; margin-right: auto; font-size: 0.8125rem; color: var(--text-mention-grey);
+    }
 
     .barre {
       display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
