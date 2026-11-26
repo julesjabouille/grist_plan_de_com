@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="fr" data-fr-scheme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plan de communication</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.15.4/dist/dsfr.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.15.4/dist/utility/icons/icons.min.css">
+  <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js"></script>
+  <style>
+    [hidden] { display: none !important; }
+    body { background: var(--background-default-grey); margin: 0; }
+    .page { max-width: 1400px; margin: 0 auto; padding: 0.75rem 1rem 2rem; }
+
+    .barre {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 0.75rem 1rem; margin-bottom: 0.75rem;
+    }
+    .barre h1 { margin: 0; font-size: 1.25rem; }
+    .barre-droite { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+    .nav-mois { display: flex; align-items: center; gap: 0.5rem; }
+    .nav-mois .periode { margin: 0; font-weight: 700; min-width: 16rem; text-align: center; }
+    .export-groupe { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+    .export-groupe .fr-label { margin: 0; font-size: 0.75rem; font-weight: 700; color: var(--text-mention-grey); }
+
+    .legende {
+      display: flex; flex-wrap: wrap; gap: 0.4rem 0.85rem; align-items: center;
+      margin-top: 0.85rem; padding: 0.65rem 0.85rem;
+      background: var(--background-alt-grey); border: 1px solid var(--border-default-grey);
+    }
+    .legende-titre {
+      margin: 0; font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.04em; color: var(--text-mention-grey);
+    }
+    .legende-item { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8125rem; }
+    .pastille {
+      width: 0.85rem; height: 0.85rem; border-radius: 0.15rem;
+      border: 1px solid rgba(0,0,0,.15); flex: 0 0 auto;
+    }
+    .pastille.we { background: #d7d7d7; }
+    .pastille.ferie { background: #b1b1b1; }
+
+    .grille-bimestre {
+      display: grid; grid-template-columns: 1fr; gap: 1rem;
+    }
+    @media (min-width: 1100px) {
+      .grille-bimestre { grid-template-columns: 1fr 1fr; }
+    }
+
+    .mois {
+      border: 1px solid var(--border-default-grey);
+      background: var(--background-default-grey);
+      min-width: 0;
+    }
+    .mois-entete {
+      padding: 0.65rem 0.85rem;
+      background: var(--background-action-high-blue-france);
+      color: #fff; font-weight: 700; text-transform: capitalize;
+    }
+
+    .cal {
+      width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 0.75rem;
+    }
+    .cal th, .cal td {
+      border-bottom: 1px solid var(--border-default-grey);
+      border-right: 1px solid var(--border-default-grey);
+      vertical-align: top; padding: 0;
+    }
+    .cal th:last-child, .cal td:last-child { border-right: 0; }
+    .cal thead th {
+      padding: 0.4rem 0.35rem; background: var(--background-alt-blue-france);
+      font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.02em; color: var(--text-title-grey); line-height: 1.25;
+    }
+    .cal .col-jour { width: 2.1rem; text-align: center; }
+    .cal .col-abs { width: 4.5rem; }
+
+    .jour-num {
+      display: block; padding: 0.35rem 0.15rem; font-weight: 700;
+      color: var(--text-mention-grey); background: var(--background-alt-grey);
+    }
+    .jour.hors { opacity: 0.35; }
+    .jour.we .jour-num { background: #e5e5e5; }
+    .jour.ferie .jour-num { background: #cfcfcf; color: var(--text-default-grey); }
+    .jour.aujourdhui .jour-num {
+      background: var(--background-action-high-blue-france); color: #fff;
+    }
+
+    .cellule {
+      display: block; width: 100%; min-height: 3.1rem; padding: 0.25rem;
+      border: 0; background: transparent; text-align: left; cursor: pointer;
+      font: inherit; color: inherit;
+    }
+    .cellule:hover { background: var(--background-alt-blue-france); }
+    .cellule:focus-visible { outline: 2px solid #0a76f6; outline-offset: -2px; }
+    .jour.we .cellule { background: #f3f3f3; }
+    .jour.ferie .cellule { background: #ececec; }
+    .jour.actif .cellule { box-shadow: inset 0 0 0 2px var(--border-action-high-blue-france); }
+
+    .puce {
+      display: block; margin: 0 0 0.2rem; padding: 0.15rem 0.3rem;
+      border-left: 3px solid var(--background-action-high-blue-france);
+      background: var(--background-alt-grey); font-size: 0.68rem; line-height: 1.25;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    .absences { display: flex; flex-wrap: wrap; gap: 0.15rem; }
+    .abs-chip {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 1.35rem; height: 1.15rem; padding: 0 0.25rem;
+      border-radius: 0.15rem; font-size: 0.62rem; font-weight: 700;
+      color: #fff; line-height: 1;
+    }
+
+    .modale-fond {
+      position: fixed; inset: 0; z-index: 1000;
+      display: flex; align-items: flex-start; justify-content: center;
+      padding: 1.5rem 1rem; overflow: auto;
+      background: rgba(22, 22, 22, 0.64);
+    }
+    .modale {
+      width: min(920px, 100%); margin: auto;
+      background: var(--background-default-grey);
+      border: 1px solid var(--border-default-grey);
+      box-shadow: 0 8px 24px rgba(22, 22, 22, 0.24);
+      display: flex; flex-direction: column; max-height: calc(100vh - 3rem);
+    }
+    .modale-entete {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 0.5rem; padding: 1rem 1.15rem;
+      border-bottom: 1px solid var(--border-default-grey);
+      background: var(--background-alt-blue-france);
+    }
+    .modale-entete h2 { margin: 0; font-size: 1.1rem; }
+    .modale-entete-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+    .modale-corps {
+      padding: 1rem 1.15rem; overflow: auto; flex: 1 1 auto;
+    }
+    .modale-pied {
+      display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem;
+      padding: 0.85rem 1.15rem;
+      border-top: 1px solid var(--border-default-grey);
+      background: var(--background-alt-grey);
+    }
+    .panneau-grille {
+      display: grid; grid-template-columns: 1fr; gap: 1.25rem;
+    }
+    @media (min-width: 820px) {
+      .panneau-grille { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); }
+    }
+    body.modale-ouverte { overflow: hidden; }
+    .bloc-titre {
+      margin: 0 0 0.65rem; font-size: 0.8rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-mention-grey);
+    }
+    .liste-existante { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 1rem; }
+    .ligne-item {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; align-items: start;
+      padding: 0.5rem 0.65rem; background: var(--background-alt-grey);
+      border-left: 3px solid var(--background-action-high-blue-france);
+    }
+    .ligne-item.edition { box-shadow: inset 0 0 0 2px var(--border-action-high-blue-france); }
+    .ligne-item .meta { margin: 0.15rem 0 0; font-size: 0.75rem; color: var(--text-mention-grey); }
+    .ligne-item .metriques { margin: 0.25rem 0 0; font-size: 0.75rem; }
+    .ligne-actions { display: flex; gap: 0.15rem; }
+    .vide { margin: 0 0 0.75rem; font-style: italic; color: var(--text-mention-grey); }
+
+    .abs-toggles { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    .abs-toggle {
+      position: relative; display: inline-flex; align-items: center; gap: 0.35rem;
+      padding: 0.35rem 0.65rem; border: 2px solid var(--border-default-grey);
+      background: var(--background-default-grey); cursor: pointer; font-size: 0.8125rem; font-weight: 600;
+    }
+    .abs-toggle input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+    .abs-toggle .pastille { width: 0.9rem; height: 0.9rem; }
+    .abs-toggle.actif { color: #fff; border-color: transparent; }
+    .abs-toggle:has(input:focus-visible) { outline: 2px solid #0a76f6; outline-offset: 2px; }
+
+    .form-ajout {
+      display: grid; grid-template-columns: 1fr; gap: 0.75rem;
+      padding-top: 0.75rem; border-top: 1px dashed var(--border-default-grey);
+    }
+    .form-ajout .fr-select-group, .form-ajout .fr-input-group { margin-bottom: 0; }
+    .form-row-2 {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;
+    }
+    @media (max-width: 560px) {
+      .form-row-2 { grid-template-columns: 1fr; }
+    }
+    .form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap; }
+
+    .demo-bandeau { margin-bottom: 0.75rem; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div id="message-config" class="fr-alert fr-alert--warning fr-alert--sm" hidden>
+      <p>Associez les colonnes du widget dans le panneau de droite (colonne « Date » obligatoire).</p>
+    </div>
+    <div id="message-erreur" class="fr-alert fr-alert--error fr-alert--sm" hidden>
+      <p></p>
+    </div>
+    <div id="message-demo" class="fr-alert fr-alert--info fr-alert--sm demo-bandeau" hidden>
+      <p>Mode aperçu (hors Grist) — données de démonstration.</p>
+    </div>
+
+    <div id="application"></div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
