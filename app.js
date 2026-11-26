@@ -88,6 +88,9 @@ let enEcriture = false;
 let modeDemo = false;
 let feriesCache = new Map();
 let jetonLiees = 0;
+let sequencesSansDate = '';
+let sequencesModifiees = false;
+let sequencesStatut = '';
 
 // ---------------------------------------------------------------------------
 // Aides
@@ -522,14 +525,20 @@ function agentParId(id) {
 // Index
 // ---------------------------------------------------------------------------
 
+function libelleCategorieBrut(valeur) {
+  const t = texte(valeur).trim();
+  if (!t || t === '0') return '';
+  return t;
+}
+
 function normaliserLigne(rec) {
   const date = versDate(rec.date);
   const cat = resoudreCategorie(rec.categorie);
   return {
-    id: rec.id,
+    id: Number(rec.id) || rec.id,
     iso: isoDepuisDate(date),
     categorieId: cat?.id || 0,
-    categorieLibelle: cat?.libelle || texte(rec.categorie).trim(),
+    categorieLibelle: cat?.libelle || libelleCategorieBrut(rec.categorie),
     categorieCouleur: cat?.couleur || PALETTE[0],
     evenement: idRef(rec.evenement),
     note: texte(rec.note).trim(),
@@ -550,7 +559,8 @@ function indexParJour() {
     const bucket = map.get(ligne.iso);
     const aDuContenu = Boolean(
       ligne.categorieId || ligne.categorieLibelle || ligne.evenement || ligne.note || ligne.lien
-      || ligne.vues !== null || ligne.likes !== null,
+      || (ligne.vues !== null && ligne.vues !== undefined)
+      || (ligne.likes !== null && ligne.likes !== undefined),
     );
     const estAbsence = Boolean(ligne.agent) && !aDuContenu;
     if (estAbsence) bucket.absences.push(ligne);
@@ -724,17 +734,16 @@ async function supprimerLignes(ids) {
 function ouvrirModale(iso) {
   const bucket = indexParJour().get(iso) || { evenements: [], absences: [] };
   const originIds = new Set([
-    ...bucket.evenements.map((e) => e.id),
-    ...bucket.absences.map((a) => a.id),
-  ]);
+    ...bucket.evenements.map((e) => Number(e.id)),
+    ...bucket.absences.map((a) => Number(a.id)),
+  ].filter((id) => id > 0));
   jourActif = iso;
   editionId = null;
   brouillon = {
     iso,
-    evenements: bucket.evenements.map((e) => ({ ...e })),
+    evenements: bucket.evenements.map((e) => ({ ...e, id: Number(e.id) || e.id })),
     absents: new Set(bucket.absences.map((a) => a.agent)),
-    // ids d’absences d’origine par agent (pour sync)
-    absencesParAgent: new Map(bucket.absences.map((a) => [a.agent, a.id])),
+    absencesParAgent: new Map(bucket.absences.map((a) => [a.agent, Number(a.id)])),
     originIds,
     tempId: -1,
   };
@@ -758,10 +767,28 @@ function basculerAbsenceBrouillon(agentId, present) {
   rendre();
 }
 
-function supprimerEvenementBrouillon(id) {
+async function supprimerEvenementBrouillon(id) {
   if (!brouillon) return;
-  brouillon.evenements = brouillon.evenements.filter((e) => e.id !== id);
-  if (editionId === id) editionId = null;
+  const nid = Number(id);
+  brouillon.evenements = brouillon.evenements.filter((e) => Number(e.id) !== nid);
+  brouillon.originIds.delete(nid);
+  if (Number(editionId) === nid) editionId = null;
+
+  // Suppression immédiate en base pour les lignes déjà persistées.
+  if (nid > 0) {
+    enregistrements = enregistrements.filter((r) => Number(r.id) !== nid);
+    if (!modeDemo) {
+      enEcriture = true;
+      try {
+        await grist.getTable().destroy([nid]);
+      } catch (err) {
+        console.error(err);
+        afficherErreur(`Suppression impossible : ${err.message || err}`);
+      } finally {
+        enEcriture = false;
+      }
+    }
+  }
   rendre();
 }
 
@@ -846,12 +873,16 @@ async function sauvegarderModale() {
     return;
   }
 
-  const gardes = new Set(brouillon.evenements.filter((e) => e.id > 0).map((e) => e.id));
+  const gardes = new Set(
+    brouillon.evenements.filter((e) => Number(e.id) > 0).map((e) => Number(e.id)),
+  );
   for (const [agentId, absId] of brouillon.absencesParAgent) {
-    if (brouillon.absents.has(agentId) && absId > 0) gardes.add(absId);
+    if (brouillon.absents.has(agentId) && Number(absId) > 0) gardes.add(Number(absId));
   }
 
-  const aSupprimer = [...brouillon.originIds].filter((id) => !gardes.has(id));
+  // Les suppressions d’événements sont déjà faites au clic poubelle :
+  // on ne retrigger destroy que pour les absences décochées encore dans originIds.
+  const aSupprimer = [...brouillon.originIds].filter((id) => !gardes.has(Number(id)));
   const aCreer = [];
   const aMaj = [];
 
@@ -866,7 +897,7 @@ async function sauvegarderModale() {
       likes: ev.likes,
       agent: 0,
     });
-    if (ev.id > 0) aMaj.push({ id: ev.id, ...payload });
+    if (Number(ev.id) > 0) aMaj.push({ id: Number(ev.id), ...payload });
     else aCreer.push(payload);
   }
 
@@ -1259,6 +1290,70 @@ function renduLegende() {
       c.libelle)));
 }
 
+async function sauverSequencesSansDate() {
+  const zone = $('#sequences-sans-date');
+  if (!zone) return;
+  const texte = zone.value;
+  sequencesSansDate = texte;
+  sequencesModifiees = false;
+  if (modeDemo) {
+    try { localStorage.setItem('plan-com-sequences-sans-date', texte); } catch { /* ignore */ }
+    sequencesStatut = 'Enregistré (aperçu local)';
+    assurerPiedSequences();
+    return;
+  }
+  try {
+    await grist.setOptions({ sequencesSansDate: texte });
+    sequencesStatut = 'Enregistré';
+  } catch (err) {
+    console.error(err);
+    sequencesStatut = '';
+    afficherErreur(`Impossible d’enregistrer les séquences sans date : ${err.message || err}`);
+  }
+  assurerPiedSequences();
+}
+
+function assurerPiedSequences() {
+  let pied = document.getElementById('pied-sequences');
+  if (!pied) {
+    pied = h('div', { id: 'pied-sequences' });
+    document.body.append(pied);
+    const zone = h('textarea', {
+      class: 'fr-input',
+      id: 'sequences-sans-date',
+      rows: 3,
+      placeholder: 'Ex. : mois de l’innovation — dates à venir — événement à planifier…',
+      value: sequencesSansDate,
+      oninput: (e) => {
+        sequencesSansDate = e.target.value;
+        sequencesModifiees = true;
+        sequencesStatut = 'Non enregistré';
+        const statut = $('#sequences-statut');
+        if (statut) statut.textContent = sequencesStatut;
+      },
+    });
+    pied.append(
+      h('aside', { class: 'notes-sans-date', 'aria-label': 'Séquences sans date connue' },
+        h('div', { class: 'notes-sans-date-inner' },
+          h('p', { class: 'bloc-titre' }, 'Séquences sans date connue'),
+          zone,
+          h('div', { class: 'notes-sans-date-actions' },
+            h('p', { class: 'notes-sans-date-statut', id: 'sequences-statut' }, ''),
+            h('button', {
+              type: 'button',
+              class: 'fr-btn fr-btn--sm',
+              onclick: () => sauverSequencesSansDate(),
+            }, 'Enregistrer les notes')))));
+  }
+
+  const zone = $('#sequences-sans-date');
+  if (zone && document.activeElement !== zone && !sequencesModifiees) {
+    zone.value = sequencesSansDate;
+  }
+  const statut = $('#sequences-statut');
+  if (statut) statut.textContent = sequencesStatut || (sequencesModifiees ? 'Non enregistré' : '');
+}
+
 function champRechercheEvenement(evEnCours) {
   const idInitial = evEnCours?.evenement || 0;
   const titreInitial = idInitial ? titreEvenement(idInitial) : '';
@@ -1592,6 +1687,7 @@ function rendre() {
 
   const modale = renduModale();
   if (modale) app.append(modale);
+  assurerPiedSequences();
 }
 
 // ---------------------------------------------------------------------------
@@ -1602,6 +1698,7 @@ function chargerDemo() {
   modeDemo = true;
   $('#message-demo').hidden = false;
   categories = categorieFallback();
+  try { sequencesSansDate = localStorage.getItem('plan-com-sequences-sans-date') || ''; } catch { sequencesSansDate = ''; }
   const y = new Date().getFullYear();
   const m = new Date().getMonth();
   debutBimestre = new Date(Date.UTC(y, m - (m % 2), 1));
@@ -1643,7 +1740,20 @@ async function rechargerLiees() {
 }
 
 async function demarrerGrist() {
-  grist.ready({ requiredAccess: 'full', columns: COLONNES });
+  grist.ready({
+    requiredAccess: 'full',
+    columns: COLONNES,
+    onEditOptions: () => {},
+  });
+
+  grist.onOptions((options) => {
+    const texte = options?.sequencesSansDate;
+    if (typeof texte !== 'string') return;
+    if (sequencesModifiees) return;
+    sequencesSansDate = texte;
+    sequencesStatut = '';
+    assurerPiedSequences();
+  });
 
   grist.onRecords(async (records, mappings) => {
     if (enEcriture) return;
