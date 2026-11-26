@@ -480,6 +480,40 @@ function titreEvenement(id) {
   return evenementsProjets.find((e) => e.id === id)?.titre || `#${id}`;
 }
 
+/** Normalise pour recherche : minuscules, sans accents, sans ponctuation. */
+function normaliserRecherche(texte) {
+  return String(texte || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function idsEvenementsDejaSurJour(saufId = 0) {
+  if (!brouillon) return new Set();
+  return new Set(
+    brouillon.evenements
+      .map((e) => e.evenement)
+      .filter((id) => id && id !== saufId),
+  );
+}
+
+function filtrerEvenements(saisie, { limite = 12, saufId = 0 } = {}) {
+  const q = normaliserRecherche(saisie);
+  if (!q) return [];
+  const tokens = q.split(' ').filter(Boolean);
+  const deja = idsEvenementsDejaSurJour(saufId);
+  return evenementsProjets
+    .filter((ev) => {
+      if (deja.has(ev.id)) return false;
+      const cible = normaliserRecherche(ev.titre);
+      return tokens.every((t) => cible.includes(t));
+    })
+    .slice(0, limite);
+}
+
 function agentParId(id) {
   return agentsCom.find((a) => a.id === id) || null;
 }
@@ -746,6 +780,13 @@ function appliquerFormulaireBrouillon(fd) {
     afficherErreur('Choisissez un événement ou saisissez une note.');
     return false;
   }
+  const saufEv = editionId
+    ? (brouillon.evenements.find((e) => e.id === editionId)?.evenement || 0)
+    : 0;
+  if (evId && idsEvenementsDejaSurJour(saufEv).has(evId)) {
+    afficherErreur('Cet événement est déjà présent sur cette fiche jour.');
+    return false;
+  }
   afficherErreur('');
   const cat = infoCategorie(catId);
   const ligne = {
@@ -931,21 +972,25 @@ function exporterPdf(titre, sousTitre, lignes) {
   doc.save(`plan-com-${slug || 'export'}.pdf`);
 }
 
-function plageExport(type) {
-  const pivot = brouillon?.iso || jourActif || aujourdhuiIso();
+function plageExport(type, dateDebutIso) {
+  const pivot = dateDebutIso || brouillon?.iso || jourActif || aujourdhuiIso();
   const d = new Date(`${pivot}T00:00:00Z`);
   let debut;
   let fin;
   let sousTitre;
 
   if (type === 'semaine') {
-    debut = debutSemaineIso(pivot);
+    debut = new Date(d.getTime());
     fin = ajouterJours(debut, 6);
     sousTitre = `Semaine du ${isoDepuisDate(debut)} au ${isoDepuisDate(fin)}`;
   } else if (type === 'mois') {
     debut = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
     fin = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
     sousTitre = libelleMois(debut);
+  } else if (type === 'jour') {
+    debut = d;
+    fin = d;
+    sousTitre = pivot;
   } else {
     debut = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
     fin = new Date(Date.UTC(d.getUTCFullYear(), 11, 31));
@@ -954,9 +999,15 @@ function plageExport(type) {
   return { isoD: isoDepuisDate(debut), isoF: isoDepuisDate(fin), sousTitre, type };
 }
 
-function exportPdfPeriode(type) {
-  const { isoD, isoF, sousTitre } = plageExport(type);
-  exporterPdf(`Plan de communication — ${type}`, sousTitre, lignesDansPlage(isoD, isoF));
+function lancerExport({ format, periode, dateDebut }) {
+  const { isoD, isoF, sousTitre, type } = plageExport(periode, dateDebut);
+  const lignes = lignesDansPlage(isoD, isoF);
+  const slug = sousTitre.toLowerCase().replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '');
+  if (format === 'csv') {
+    exporterCsv(`plan-com-${type}-${slug}.csv`, lignes);
+  } else {
+    exporterPdf(`Plan de communication — ${type}`, sousTitre, lignes);
+  }
 }
 
 function csvEscape(val) {
@@ -989,21 +1040,11 @@ function exporterCsv(nomFichier, lignes) {
   URL.revokeObjectURL(url);
 }
 
-function exportCsvPeriode(type) {
-  const { isoD, isoF, sousTitre, type: t } = plageExport(type);
-  const slug = sousTitre.toLowerCase().replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '');
-  exporterCsv(`plan-com-${t}-${slug}.csv`, lignesDansPlage(isoD, isoF));
-}
-
-function exportCsvJour() {
+function lignesFicheJourCourante() {
   const iso = brouillon?.iso || jourActif;
-  if (!iso) {
-    afficherErreur('Ouvrez une fiche jour pour l’exporter en CSV.');
-    return;
-  }
-  let lignes;
+  if (!iso) return null;
   if (brouillon && brouillon.iso === iso) {
-    lignes = [
+    return [
       ...brouillon.evenements,
       ...[...brouillon.absents].map((agentId) => ({
         iso,
@@ -1016,15 +1057,24 @@ function exportCsvJour() {
         agent: agentId,
       })),
     ];
-  } else {
-    lignes = lignesDansPlage(iso, iso);
+  }
+  return lignesDansPlage(iso, iso);
+}
+
+function exportCsvJour() {
+  const iso = brouillon?.iso || jourActif;
+  const lignes = lignesFicheJourCourante();
+  if (!iso || !lignes) {
+    afficherErreur('Ouvrez une fiche jour pour l’exporter en CSV.');
+    return;
   }
   exporterCsv(`plan-com-jour-${iso}.csv`, lignes);
 }
 
 function exportPdfJour() {
   const iso = brouillon?.iso || jourActif;
-  if (!iso) {
+  const lignes = lignesFicheJourCourante();
+  if (!iso || !lignes) {
     afficherErreur('Ouvrez une fiche jour pour l’exporter en PDF.');
     return;
   }
@@ -1032,27 +1082,77 @@ function exportPdfJour() {
   const libelle = d.toLocaleDateString('fr-FR', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC',
   });
-  let lignes;
-  if (brouillon && brouillon.iso === iso) {
-    lignes = [
-      ...brouillon.evenements,
-      ...[...brouillon.absents].map((agentId) => ({
-        iso,
-        categorieId: 0,
-        categorieLibelle: 'Absence',
-        evenement: 0,
-        note: '',
-        lien: '',
-        vues: null,
-        likes: null,
-        agent: agentId,
-        id: brouillon.absencesParAgent.get(agentId) || 0,
-      })),
-    ];
-  } else {
-    lignes = lignesDansPlage(iso, iso);
-  }
   exporterPdf('Plan de communication — fiche jour', libelle, lignes);
+}
+
+function renduExport() {
+  const panel = h('div', { class: 'export-panel', hidden: true, role: 'dialog', 'aria-label': 'Exporter' });
+  const selFormat = h('select', { class: 'fr-select', id: 'export-format' },
+    h('option', { value: 'pdf' }, 'PDF'),
+    h('option', { value: 'csv' }, 'CSV'));
+  const selPeriode = h('select', { class: 'fr-select', id: 'export-periode' },
+    h('option', { value: 'semaine' }, 'Semaine (7 jours)'),
+    h('option', { value: 'mois' }, 'Mois'),
+    h('option', { value: 'annee' }, 'Année'),
+    h('option', { value: 'jour' }, 'Jour'));
+  const inputDebut = h('input', {
+    class: 'fr-input',
+    id: 'export-debut',
+    type: 'date',
+    value: brouillon?.iso || jourActif || aujourdhuiIso(),
+  });
+
+  panel.append(
+    h('div', { class: 'fr-select-group' },
+      h('label', { class: 'fr-label', htmlFor: 'export-format' }, 'Type d’export'),
+      selFormat),
+    h('div', { class: 'fr-select-group' },
+      h('label', { class: 'fr-label', htmlFor: 'export-periode' }, 'Période'),
+      selPeriode),
+    h('div', { class: 'fr-input-group' },
+      h('label', { class: 'fr-label', htmlFor: 'export-debut' }, 'Date de début'),
+      inputDebut),
+    h('div', { class: 'export-panel-actions' },
+      h('button', {
+        type: 'button',
+        class: 'fr-btn fr-btn--tertiary fr-btn--sm',
+        onclick: () => { panel.hidden = true; },
+      }, 'Fermer'),
+      h('button', {
+        type: 'button',
+        class: 'fr-btn fr-btn--sm',
+        onclick: () => {
+          lancerExport({
+            format: selFormat.value,
+            periode: selPeriode.value,
+            dateDebut: inputDebut.value,
+          });
+          panel.hidden = true;
+        },
+      }, 'Télécharger')));
+
+  const bouton = h('button', {
+    type: 'button',
+    class: 'fr-btn fr-btn--secondary fr-btn--sm fr-icon-download-line fr-btn--icon-left',
+    onclick: (e) => {
+      e.stopPropagation();
+      panel.hidden = !panel.hidden;
+    },
+  }, 'Exporter');
+
+  const wrap = h('div', { class: 'export-wrap' }, bouton, panel);
+  // Fermer au clic extérieur (une seule fois par rendu).
+  setTimeout(() => {
+    const fermer = (ev) => {
+      if (!wrap.isConnected) {
+        document.removeEventListener('click', fermer);
+        return;
+      }
+      if (!wrap.contains(ev.target)) panel.hidden = true;
+    };
+    document.addEventListener('click', fermer);
+  }, 0);
+  return wrap;
 }
 
 // ---------------------------------------------------------------------------
@@ -1156,11 +1256,100 @@ function renduLegende() {
     h('p', { class: 'legende-titre' }, 'Légende'),
     ...categories.map((c) => h('span', { class: 'legende-item', role: 'listitem' },
       h('span', { class: 'pastille', style: { background: c.couleur } }),
-      c.libelle)),
-    h('span', { class: 'legende-item', role: 'listitem' },
-      h('span', { class: 'pastille we' }), 'Week-end'),
-    h('span', { class: 'legende-item', role: 'listitem' },
-      h('span', { class: 'pastille ferie' }), 'Jour férié'));
+      c.libelle)));
+}
+
+function champRechercheEvenement(evEnCours) {
+  const idInitial = evEnCours?.evenement || 0;
+  const titreInitial = idInitial ? titreEvenement(idInitial) : '';
+
+  const hidden = h('input', {
+    type: 'hidden', name: 'evenement', id: 'ajout-evenement-id', value: String(idInitial || 0),
+  });
+  const input = h('input', {
+    class: 'fr-input',
+    id: 'ajout-evenement',
+    type: 'search',
+    autocomplete: 'off',
+    placeholder: 'Tapez les premiers caractères…',
+    value: '',
+  });
+  const choixLibelle = h('span', {}, titreInitial || '');
+  const choix = h('div', {
+    class: 'recherche-ev-choix',
+    hidden: !idInitial,
+  },
+  choixLibelle,
+  h('button', {
+    type: 'button',
+    class: 'fr-btn fr-btn--sm fr-btn--tertiary-no-outline',
+    onclick: () => {
+      hidden.value = '0';
+      choix.hidden = true;
+      choixLibelle.textContent = '';
+      input.value = '';
+      input.focus();
+      majSuggestions('');
+    },
+  }, 'Retirer'));
+  const liste = h('ul', {
+    class: 'recherche-ev-liste',
+    id: 'ajout-evenement-liste',
+    role: 'listbox',
+    hidden: true,
+  });
+
+  function selectionner(ev) {
+    hidden.value = String(ev.id);
+    choixLibelle.textContent = ev.titre;
+    choix.hidden = false;
+    input.value = '';
+    liste.hidden = true;
+    liste.replaceChildren();
+  }
+
+  function majSuggestions(saisie) {
+    const resultats = filtrerEvenements(saisie, { saufId: idInitial });
+    liste.replaceChildren();
+    if (!normaliserRecherche(saisie)) {
+      liste.hidden = true;
+      return;
+    }
+    if (!resultats.length) {
+      liste.append(h('li', { class: 'vide-sug' }, 'Aucun titre disponible'));
+      liste.hidden = false;
+      return;
+    }
+    for (const ev of resultats) {
+      liste.append(h('li', { role: 'option' },
+        h('button', {
+          type: 'button',
+          onclick: () => selectionner(ev),
+        }, ev.titre)));
+    }
+    liste.hidden = false;
+  }
+
+  input.addEventListener('input', () => majSuggestions(input.value));
+  input.addEventListener('focus', () => {
+    if (normaliserRecherche(input.value)) majSuggestions(input.value);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      liste.hidden = true;
+      input.blur();
+    }
+  });
+
+  return h('div', { class: 'fr-input-group recherche-ev' },
+    h('label', { class: 'fr-label', htmlFor: 'ajout-evenement' },
+      'Événement (suivi_projets)',
+      h('span', { class: 'fr-hint-text' },
+        'Recherche insensible à la casse, aux accents et à la ponctuation')),
+    input,
+    hidden,
+    choix,
+    liste);
 }
 
 function renduFormulaire(evEnCours) {
@@ -1181,16 +1370,7 @@ function renduFormulaire(evEnCours) {
         value: String(c.id),
         selected: evEnCours && evEnCours.categorieId === c.id,
       }, c.libelle)))),
-  h('div', { class: 'fr-select-group' },
-    h('label', { class: 'fr-label', htmlFor: 'ajout-evenement' },
-      'Événement (suivi_projets)',
-      h('span', { class: 'fr-hint-text' }, 'Titres de la table suivi_projets')),
-    h('select', { class: 'fr-select', id: 'ajout-evenement', name: 'evenement' },
-      h('option', { value: '0' }, '— Aucun —'),
-      ...evenementsProjets.map((ev) => h('option', {
-        value: String(ev.id),
-        selected: evEnCours && evEnCours.evenement === ev.id,
-      }, ev.titre)))),
+  champRechercheEvenement(evEnCours),
   h('div', { class: 'fr-input-group' },
     h('label', { class: 'fr-label', htmlFor: 'ajout-note' }, 'Note (optionnel)'),
     h('input', {
@@ -1382,32 +1562,7 @@ function rendre() {
     h('div', { class: 'barre' },
       h('h1', {}, 'Plan de communication'),
       h('div', { class: 'barre-droite' },
-        h('div', { class: 'export-groupe' },
-          h('span', { class: 'fr-label' }, 'Export'),
-          h('button', {
-            type: 'button', class: 'fr-btn fr-btn--tertiary fr-btn--sm',
-            onclick: () => exportPdfPeriode('semaine'), title: 'PDF semaine',
-          }, 'PDF sem.'),
-          h('button', {
-            type: 'button', class: 'fr-btn fr-btn--tertiary fr-btn--sm',
-            onclick: () => exportPdfPeriode('mois'), title: 'PDF mois',
-          }, 'PDF mois'),
-          h('button', {
-            type: 'button', class: 'fr-btn fr-btn--tertiary fr-btn--sm',
-            onclick: () => exportPdfPeriode('annee'), title: 'PDF année',
-          }, 'PDF an'),
-          h('button', {
-            type: 'button', class: 'fr-btn fr-btn--tertiary fr-btn--sm',
-            onclick: () => exportCsvPeriode('semaine'), title: 'CSV semaine',
-          }, 'CSV sem.'),
-          h('button', {
-            type: 'button', class: 'fr-btn fr-btn--tertiary fr-btn--sm',
-            onclick: () => exportCsvPeriode('mois'), title: 'CSV mois',
-          }, 'CSV mois'),
-          h('button', {
-            type: 'button', class: 'fr-btn fr-btn--tertiary fr-btn--sm',
-            onclick: () => exportCsvPeriode('annee'), title: 'CSV année',
-          }, 'CSV an')),
+        renduExport(),
         h('div', { class: 'nav-mois' },
           h('button', {
             type: 'button',
