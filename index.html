@@ -12,17 +12,16 @@
   <style>
     [hidden] { display: none !important; }
     body { background: var(--background-default-grey); margin: 0; }
-    .page { max-width: 1400px; margin: 0 auto; padding: 0.75rem 1rem 11rem; }
+    .page { max-width: 1400px; margin: 0 auto; padding: 0.75rem 1rem 2rem; }
 
     .notes-sans-date {
-      position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
-      padding: 0.75rem 1rem 0.9rem;
+      margin-top: 1.25rem;
+      padding: 0.85rem 1rem 1rem;
       background: var(--background-default-grey);
+      border: 1px solid var(--border-default-grey);
       border-top: 3px solid var(--background-action-high-blue-france);
-      box-shadow: 0 -4px 16px rgba(22, 22, 22, 0.08);
     }
     .notes-sans-date-inner {
-      max-width: 1400px; margin: 0 auto;
       display: grid; gap: 0.5rem;
     }
     .notes-sans-date .bloc-titre { margin-bottom: 0; }
