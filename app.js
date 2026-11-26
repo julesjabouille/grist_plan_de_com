@@ -1313,17 +1313,25 @@ async function sauverSequencesSansDate() {
   assurerPiedSequences();
 }
 
-function assurerPiedSequences() {
-  let pied = document.getElementById('pied-sequences');
-  if (!pied) {
-    pied = h('div', { id: 'pied-sequences' });
-    document.body.append(pied);
-    const zone = h('textarea', {
+function renduNotesSansDate() {
+  const focusNotes = document.activeElement?.id === 'sequences-sans-date';
+  const valeur = focusNotes
+    ? (document.getElementById('sequences-sans-date')?.value ?? sequencesSansDate)
+    : sequencesSansDate;
+
+  return h('aside', {
+    class: 'notes-sans-date',
+    id: 'pied-sequences',
+    'aria-label': 'Séquences sans date connue',
+  },
+  h('div', { class: 'notes-sans-date-inner' },
+    h('p', { class: 'bloc-titre' }, 'Séquences sans date connue'),
+    h('textarea', {
       class: 'fr-input',
       id: 'sequences-sans-date',
       rows: 3,
       placeholder: 'Ex. : mois de l’innovation — dates à venir — événement à planifier…',
-      value: sequencesSansDate,
+      value: valeur,
       oninput: (e) => {
         sequencesSansDate = e.target.value;
         sequencesModifiees = true;
@@ -1331,27 +1339,25 @@ function assurerPiedSequences() {
         const statut = $('#sequences-statut');
         if (statut) statut.textContent = sequencesStatut;
       },
-    });
-    pied.append(
-      h('aside', { class: 'notes-sans-date', 'aria-label': 'Séquences sans date connue' },
-        h('div', { class: 'notes-sans-date-inner' },
-          h('p', { class: 'bloc-titre' }, 'Séquences sans date connue'),
-          zone,
-          h('div', { class: 'notes-sans-date-actions' },
-            h('p', { class: 'notes-sans-date-statut', id: 'sequences-statut' }, ''),
-            h('button', {
-              type: 'button',
-              class: 'fr-btn fr-btn--sm',
-              onclick: () => sauverSequencesSansDate(),
-            }, 'Enregistrer les notes')))));
-  }
+    }),
+    h('div', { class: 'notes-sans-date-actions' },
+      h('p', { class: 'notes-sans-date-statut', id: 'sequences-statut' },
+        sequencesStatut || (sequencesModifiees ? 'Non enregistré' : '')),
+      h('button', {
+        type: 'button',
+        class: 'fr-btn fr-btn--sm',
+        onclick: () => sauverSequencesSansDate(),
+      }, 'Enregistrer les notes'))));
+}
 
+function assurerPiedSequences() {
+  // Conservé pour les callbacks options : le rendu principal place le bloc en bas de page.
+  const statut = $('#sequences-statut');
+  if (statut) statut.textContent = sequencesStatut || (sequencesModifiees ? 'Non enregistré' : '');
   const zone = $('#sequences-sans-date');
   if (zone && document.activeElement !== zone && !sequencesModifiees) {
     zone.value = sequencesSansDate;
   }
-  const statut = $('#sequences-statut');
-  if (statut) statut.textContent = sequencesStatut || (sequencesModifiees ? 'Non enregistré' : '');
 }
 
 function champRechercheEvenement(evEnCours) {
@@ -1683,11 +1689,26 @@ function rendre() {
       renduMois(debutBimestre, index),
       renduMois(mois2, index)),
     renduLegende(),
+    renduNotesSansDate(),
   );
 
   const modale = renduModale();
   if (modale) app.append(modale);
-  assurerPiedSequences();
+
+  // Ancien bandeau fixe éventuellement resté sur body.
+  for (const orphelin of document.querySelectorAll('body > #pied-sequences')) {
+    orphelin.remove();
+  }
+
+  // Restaure le focus notes si l’utilisateur était en train de saisir.
+  if (sequencesModifiees) {
+    const zone = $('#sequences-sans-date');
+    if (zone) {
+      zone.focus();
+      const len = zone.value.length;
+      zone.setSelectionRange(len, len);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
