@@ -585,35 +585,54 @@ function lignesDansPlage(isoDebut, isoFin) {
 // Écriture
 // ---------------------------------------------------------------------------
 
-/** Ne renvoie que les colonnes réellement mappées (évite l’échec « Unknown column »). */
+/**
+ * Convertit les champs widget → noms de colonnes Grist.
+ * L’API Custom Widget attend ensuite { fields: {...} } (voir grist-widget ARIANE).
+ */
 function champsVersGrist(champs) {
   if (modeDemo) {
     const copie = { ...champs };
     delete copie.id;
     return copie;
   }
-  if (!estMappe('date')) {
+  if (!estMappe('date') && !('date' in champs)) {
     throw new Error('Colonne « Date » non mappée dans le panneau du widget.');
   }
+
+  // Préfère mapColumnNamesBack (mapping officiel Grist).
+  if (typeof grist.mapColumnNamesBack === 'function') {
+    try {
+      const mappe = grist.mapColumnNamesBack({ id: champs.id || 0, ...champs }, { mappings: mappingsGrist });
+      if (mappe && typeof mappe === 'object') {
+        const sortie = {};
+        for (const [colonne, val] of Object.entries(mappe)) {
+          if (colonne === 'id' || val === undefined || val === null) continue;
+          sortie[colonne] = val;
+        }
+        if (Object.keys(sortie).length) return sortie;
+      }
+    } catch (err) {
+      console.warn('mapColumnNamesBack:', err);
+    }
+  }
+
   const sortie = {};
   for (const [cle, valeur] of Object.entries(champs)) {
     if (cle === 'id') continue;
     if (!estMappe(cle)) continue;
-    if (valeur === undefined) continue;
-    // Ne pas envoyer null : certaines colonnes numériques / Ref le rejettent.
-    if (valeur === null) continue;
+    if (valeur === undefined || valeur === null) continue;
     sortie[mappingsGrist[cle]] = valeur;
   }
-  if (!Object.prototype.hasOwnProperty.call(sortie, mappingsGrist.date)) {
-    throw new Error('Date manquante pour l’écriture Grist.');
+  if (!Object.keys(sortie).length) {
+    throw new Error('Aucun champ mappé à écrire. Vérifiez le mapping des colonnes du widget.');
   }
   return sortie;
 }
 
 function datePourEcriture(iso) {
-  // Timestamp Unix (secondes) : fiable pour les colonnes Date Grist.
   if (modeDemo) return iso;
-  const ts = Date.parse(`${iso}T00:00:00Z`);
+  // Secondes depuis epoch (minuit UTC), format Date Grist.
+  const ts = Date.parse(`${String(iso).slice(0, 10)}T00:00:00Z`);
   return Number.isFinite(ts) ? Math.floor(ts / 1000) : iso;
 }
 
@@ -622,8 +641,9 @@ function payloadEvenement({ date, categorieId, evenementId, note, lien, vues, li
   if (estMappe('categorie') || modeDemo) {
     payload.categorie = valeurCategoriePourEcriture(categorieId);
   }
-  if (estMappe('evenement') || modeDemo) {
-    payload.evenement = evenementId || 0;
+  // Ne pas envoyer Ref vide (0) : Grist laisse la cellule vide / évite des effets de bord.
+  if ((estMappe('evenement') || modeDemo) && evenementId) {
+    payload.evenement = evenementId;
   }
   if (estMappe('note') || modeDemo) {
     payload.note = note || '';
@@ -643,30 +663,65 @@ function payloadEvenement({ date, categorieId, evenementId, note, lien, vues, li
   return payload;
 }
 
+/** Absence seule : uniquement date + agent (évite les Ref à 0 rejetées par Grist). */
+function payloadAbsence(date, agentId) {
+  const payload = { date: datePourEcriture(date), agent: agentId };
+  if (modeDemo) {
+    payload.categorie = 0;
+    payload.evenement = 0;
+    payload.note = '';
+    payload.lien = '';
+  }
+  return payload;
+}
+
+/** Intègre le formulaire ouvert (ajout / édition) avant sauvegarde. */
+function integrerFormulaireAvantSauvegarde() {
+  const form = document.querySelector('.modale form.form-ajout');
+  if (!form || !brouillon) return true;
+
+  const fd = new FormData(form);
+  const catId = Number(fd.get('categorie') || 0);
+  const evId = Number(fd.get('evenement') || 0);
+  const note = String(fd.get('note') || '').trim();
+  const lien = String(fd.get('lien') || '').trim();
+  const vues = String(fd.get('vues') || '').trim();
+  const likes = String(fd.get('likes') || '').trim();
+  const enCours = Boolean(editionId || catId || evId || note || lien || vues || likes);
+
+  if (!enCours) return true;
+  return appliquerFormulaireBrouillon(fd);
+}
+
 async function ecrireGrist({ creer = [], maj = [], supprimer = [] }) {
   const table = grist.getTable();
-  if (supprimer.length) await table.destroy(supprimer);
+
+  if (supprimer.length) {
+    await table.destroy(supprimer.map(Number));
+  }
+
   if (maj.length) {
+    // Format API : { id, fields: { Colonne: valeur } }
     const records = maj.map((m) => {
       const { id, ...champs } = m;
-      return { id, ...champsVersGrist(champs) };
+      const fields = champsVersGrist(champs);
+      if (!Object.keys(fields).length) {
+        throw new Error(`Mise à jour #${id} : aucun champ mappé.`);
+      }
+      return { id: Number(id), fields };
     });
-    await table.update(records);
+    await table.update(records.length === 1 ? records[0] : records);
   }
+
   if (creer.length) {
-    const records = creer.map((c) => champsVersGrist(c));
-    if (!records.length || !Object.keys(records[0] || {}).length) {
-      throw new Error('Aucun champ mappé à écrire. Vérifiez le mapping des colonnes du widget.');
-    }
-    try {
-      await table.create(records);
-    } catch (err) {
-      // Secours : AddRecord via docApi (noms de colonnes déjà résolus).
-      const tableId = await grist.getSelectedTableId();
-      const actions = records.map((r) => ['AddRecord', tableId, null, r]);
-      await grist.docApi.applyUserActions(actions);
-      console.warn('create() a échoué, applyUserActions utilisé :', err);
-    }
+    const records = creer.map((c) => {
+      const fields = champsVersGrist(c);
+      if (!Object.keys(fields).length) {
+        throw new Error('Création : aucun champ mappé. Vérifiez le mapping des colonnes.');
+      }
+      return { fields };
+    });
+    await table.create(records.length === 1 ? records[0] : records, { parseStrings: false });
   }
 }
 
@@ -861,6 +916,10 @@ function appliquerBrouillonLocalement(iso, aSupprimer, aMaj, aCreer) {
 
 async function sauvegarderModale() {
   if (!brouillon) return;
+
+  // Valide / intègre l’événement en cours de saisie avant d’écrire.
+  if (!integrerFormulaireAvantSauvegarde()) return;
+
   const iso = brouillon.iso;
 
   if (!modeDemo && !estMappe('date')) {
@@ -872,6 +931,10 @@ async function sauvegarderModale() {
     afficherErreur('Mappez au moins « Catégorie », « Événement » ou « Note » pour enregistrer des événements.');
     return;
   }
+  if (brouillon.absents.size && !modeDemo && !estMappe('agent')) {
+    afficherErreur('Pour enregistrer des absents, mappez la colonne « Agent absent ».');
+    return;
+  }
 
   const gardes = new Set(
     brouillon.evenements.filter((e) => Number(e.id) > 0).map((e) => Number(e.id)),
@@ -880,8 +943,7 @@ async function sauvegarderModale() {
     if (brouillon.absents.has(agentId) && Number(absId) > 0) gardes.add(Number(absId));
   }
 
-  // Les suppressions d’événements sont déjà faites au clic poubelle :
-  // on ne retrigger destroy que pour les absences décochées encore dans originIds.
+  // Suppressions restantes = surtout absences décochées (événements déjà détruits au clic poubelle).
   const aSupprimer = [...brouillon.originIds].filter((id) => !gardes.has(Number(id)));
   const aCreer = [];
   const aMaj = [];
@@ -901,18 +963,16 @@ async function sauvegarderModale() {
     else aCreer.push(payload);
   }
 
-  if (brouillon.absents.size && !modeDemo && !estMappe('agent')) {
-    afficherErreur('Absences non enregistrées : mappez la colonne « Agent absent ».');
-  } else {
-    for (const agentId of brouillon.absents) {
-      const existant = brouillon.absencesParAgent.get(agentId);
-      if (!existant || existant < 0 || !brouillon.originIds.has(existant)) {
-        aCreer.push(payloadEvenement({
-          date: iso, categorieId: 0, evenementId: 0, note: '', lien: '',
-          vues: null, likes: null, agent: agentId,
-        }));
-      }
-    }
+  // Absences : créables même sans aucun événement com sur le jour.
+  for (const agentId of brouillon.absents) {
+    const existant = Number(brouillon.absencesParAgent.get(agentId) || 0);
+    if (existant > 0 && brouillon.originIds.has(existant)) continue;
+    aCreer.push(payloadAbsence(iso, agentId));
+  }
+
+  if (!aCreer.length && !aMaj.length && !aSupprimer.length) {
+    fermerModale();
+    return;
   }
 
   enEcriture = true;
@@ -925,7 +985,6 @@ async function sauvegarderModale() {
     }
 
     await ecrireGrist({ creer: aCreer, maj: aMaj, supprimer: aSupprimer });
-    // Mise à jour optimiste pour que le calendrier se remplisse tout de suite.
     appliquerBrouillonLocalement(iso, aSupprimer, aMaj, aCreer);
     enEcriture = false;
     fermerModale();
@@ -1507,7 +1566,7 @@ function renduFormulaire(evEnCours) {
       onclick: () => { editionId = null; rendre(); },
     }, 'Annuler la modification'),
     h('button', { type: 'submit', class: 'fr-btn fr-btn--secondary' },
-      enEdition ? 'Valider la modification' : 'Ajouter à la fiche')));
+      enEdition ? 'Valider la modification' : 'Ajouter un autre événement')));
 }
 
 function renduModale() {
